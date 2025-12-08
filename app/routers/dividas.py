@@ -434,7 +434,32 @@ async def registrar_pagamento_divida(divida_id: str, payload: PagamentoDividaIn,
         await db.refresh(divida)
         await db.refresh(pagamento)
 
-        # Criar Venda correspondente ao pagamento da dívida
+        # Snapshot seguro para resposta sem tocar no ORM após novo commit
+        snap_cli_nome = None
+        try:
+            if divida.cliente_id:
+                r = await db.execute(select(Cliente.nome).where(Cliente.id == divida.cliente_id))
+                snap_cli_nome = r.scalar_one_or_none()
+        except Exception:
+            snap_cli_nome = None
+
+        divida_snapshot = {
+            'id': divida.id,
+            'id_local': divida.id_local,
+            'cliente_id': divida.cliente_id,
+            'usuario_id': divida.usuario_id,
+            'cliente_nome': snap_cli_nome,
+            'data_divida': divida.data_divida,
+            'valor_total': float(divida.valor_total or 0.0),
+            'valor_original': float(divida.valor_original or 0.0),
+            'desconto_aplicado': float(divida.desconto_aplicado or 0.0),
+            'percentual_desconto': float(divida.percentual_desconto or 0.0),
+            'valor_pago': float(divida.valor_pago or 0.0),
+            'status': divida.status,
+            'observacao': divida.observacao,
+        }
+
+        # Criar Venda correspondente ao pagamento da dívida + Item sintético PAGDIV
         try:
             from app.db.models import Venda
             venda = Venda(
@@ -447,17 +472,66 @@ async def registrar_pagamento_divida(divida_id: str, payload: PagamentoDividaIn,
                 cancelada=False,
             )
             db.add(venda)
+            await db.flush()
+
+            # Garantir produto PAGDIV
+            prod_res = await db.execute(select(Produto).where(Produto.codigo == "PAGDIV"))
+            prod = prod_res.scalar_one_or_none()
+            if not prod:
+                prod = Produto(
+                    codigo="PAGDIV",
+                    nome="Pagamento de Dívida",
+                    descricao="Item sintético para registrar pagamento de dívida",
+                    preco_custo=0.0,
+                    preco_venda=0.0,
+                    estoque=0.0,
+                    estoque_minimo=0.0,
+                    categoria_id=None,
+                    venda_por_peso=False,
+                    unidade_medida='un',
+                    ativo=True,
+                    taxa_iva=0.0,
+                    codigo_imposto=None,
+                )
+                db.add(prod)
+                await db.flush()
+
+            valor_pago = float(payload.valor)
+            item = ItemVenda(
+                venda_id=venda.id,
+                produto_id=prod.id,
+                quantidade=1,
+                peso_kg=0.0,
+                preco_unitario=valor_pago,
+                subtotal=valor_pago,
+                taxa_iva=0.0,
+                base_iva=0.0,
+                valor_iva=0.0,
+            )
+            db.add(item)
             await db.commit()
         except Exception:
             await db.rollback()
 
-        # Injetar nome do cliente, se disponível
+        # Construir resposta a partir do snapshot (evita lazy loading após commit)
         try:
-            setattr(divida, 'cliente_nome', getattr(getattr(divida, 'cliente', None), 'nome', None))
-        except Exception:
-            setattr(divida, 'cliente_nome', None)
-
-        return DividaOut.model_validate(divida)
+            return DividaOut(
+                id=divida_snapshot['id'],
+                id_local=divida_snapshot['id_local'],
+                cliente_id=divida_snapshot['cliente_id'],
+                usuario_id=divida_snapshot['usuario_id'],
+                cliente_nome=divida_snapshot['cliente_nome'],
+                data_divida=divida_snapshot['data_divida'],
+                valor_total=divida_snapshot['valor_total'],
+                valor_original=divida_snapshot['valor_original'],
+                desconto_aplicado=divida_snapshot['desconto_aplicado'],
+                percentual_desconto=divida_snapshot['percentual_desconto'],
+                valor_pago=divida_snapshot['valor_pago'],
+                status=divida_snapshot['status'],
+                observacao=divida_snapshot['observacao'],
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Falha ao construir resposta da dívida: {e}")
     except HTTPException:
         await db.rollback()
         raise
