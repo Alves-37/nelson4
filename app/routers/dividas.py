@@ -51,6 +51,7 @@ class DividaOut(BaseModel):
     cliente_id: Optional[uuid.UUID]
     usuario_id: Optional[uuid.UUID]
     cliente_nome: Optional[str] = None
+    usuario_nome: Optional[str] = None
     data_divida: datetime
     valor_total: float
     valor_original: float
@@ -88,7 +89,7 @@ def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
         return None
 
 
-def _to_divida_out(divida: Divida, cliente_nome: Optional[str] = None) -> DividaOut:
+def _to_divida_out(divida: Divida, cliente_nome: Optional[str] = None, usuario_nome: Optional[str] = None) -> DividaOut:
     try:
         return DividaOut(
             id=getattr(divida, 'id'),
@@ -96,6 +97,7 @@ def _to_divida_out(divida: Divida, cliente_nome: Optional[str] = None) -> Divida
             cliente_id=getattr(divida, 'cliente_id', None),
             usuario_id=getattr(divida, 'usuario_id', None),
             cliente_nome=cliente_nome,
+            usuario_nome=usuario_nome,
             data_divida=getattr(divida, 'data_divida'),
             valor_total=float(getattr(divida, 'valor_total', 0.0) or 0.0),
             valor_original=float(getattr(divida, 'valor_original', 0.0) or 0.0),
@@ -167,13 +169,23 @@ async def criar_divida(payload: DividaCreate, db: AsyncSession = Depends(get_db_
         await db.commit()
         await db.refresh(nova_divida)
 
-        # Injetar nome do cliente, se carregado
+        # Buscar nomes de cliente e usuário sem lazy loading
+        cli_nome = None
+        usr_nome = None
         try:
-            setattr(nova_divida, 'cliente_nome', getattr(getattr(nova_divida, 'cliente', None), 'nome', None))
+            if nova_divida.cliente_id:
+                r = await db.execute(select(Cliente.nome).where(Cliente.id == nova_divida.cliente_id))
+                cli_nome = r.scalar_one_or_none()
         except Exception:
-            setattr(nova_divida, 'cliente_nome', None)
+            cli_nome = None
+        try:
+            if nova_divida.usuario_id:
+                r = await db.execute(select(User.nome).where(User.id == nova_divida.usuario_id))
+                usr_nome = r.scalar_one_or_none()
+        except Exception:
+            usr_nome = None
 
-        return _to_divida_out(nova_divida, cliente_nome=getattr(getattr(nova_divida, 'cliente', None), 'nome', None))
+        return _to_divida_out(nova_divida, cliente_nome=cli_nome, usuario_nome=usr_nome)
     except HTTPException:
         await db.rollback()
         raise
@@ -215,13 +227,23 @@ async def obter_divida(divida_id: str, db: AsyncSession = Depends(get_db_session
             except Exception:
                 continue
 
-        # Injetar nome do cliente
+        # Buscar nomes de cliente e usuário sem lazy loading
+        cli_nome = None
+        usr_nome = None
         try:
-            setattr(divida, 'cliente_nome', getattr(getattr(divida, 'cliente', None), 'nome', None))
+            if divida.cliente_id:
+                r = await db.execute(select(Cliente.nome).where(Cliente.id == divida.cliente_id))
+                cli_nome = r.scalar_one_or_none()
         except Exception:
-            setattr(divida, 'cliente_nome', None)
+            cli_nome = None
+        try:
+            if divida.usuario_id:
+                r = await db.execute(select(User.nome).where(User.id == divida.usuario_id))
+                usr_nome = r.scalar_one_or_none()
+        except Exception:
+            usr_nome = None
 
-        base = _to_divida_out(divida, cliente_nome=getattr(getattr(divida, 'cliente', None), 'nome', None))
+        base = _to_divida_out(divida, cliente_nome=cli_nome, usuario_nome=usr_nome)
         return DividaDetailOut(**base.model_dump(), itens=itens_out)
     except HTTPException:
         raise
@@ -241,8 +263,13 @@ async def listar_dividas(
     """
     try:
         stmt = (
-            select(Divida, Cliente.nome.label("cliente_nome"))
+            select(
+                Divida,
+                Cliente.nome.label("cliente_nome"),
+                User.nome.label("usuario_nome"),
+            )
             .join(Cliente, Divida.cliente_id == Cliente.id, isouter=True)
+            .join(User, Divida.usuario_id == User.id, isouter=True)
         )
 
         cliente_uuid = _parse_uuid(cliente_id)
@@ -256,11 +283,11 @@ async def listar_dividas(
         rows = result.all()
 
         resposta: list[DividaOut] = []
-        for divida, cli_nome in rows:
+        for divida, cli_nome, usr_nome in rows:
             try:
-                out = _to_divida_out(divida, cliente_nome=cli_nome)
+                out = _to_divida_out(divida, cliente_nome=cli_nome, usuario_nome=usr_nome)
             except Exception:
-                out = _to_divida_out(divida, cliente_nome=None)
+                out = _to_divida_out(divida, cliente_nome=cli_nome, usuario_nome=None)
             resposta.append(out)
         return resposta
     except Exception as e:
@@ -501,13 +528,23 @@ async def registrar_pagamento_divida(divida_id: str, payload: PagamentoDividaIn,
             # Não falhar o endpoint se a criação da venda falhar; apenas prosseguir
             await db.rollback()
 
-        # Injetar nome do cliente, se disponível
+        # Buscar nomes sem lazy
+        cli_nome = None
+        usr_nome = None
         try:
-            setattr(divida, 'cliente_nome', getattr(getattr(divida, 'cliente', None), 'nome', None))
+            if divida.cliente_id:
+                r = await db.execute(select(Cliente.nome).where(Cliente.id == divida.cliente_id))
+                cli_nome = r.scalar_one_or_none()
         except Exception:
-            setattr(divida, 'cliente_nome', None)
+            cli_nome = None
+        try:
+            if divida.usuario_id:
+                r = await db.execute(select(User.nome).where(User.id == divida.usuario_id))
+                usr_nome = r.scalar_one_or_none()
+        except Exception:
+            usr_nome = None
 
-        return _to_divida_out(divida, cliente_nome=getattr(getattr(divida, 'cliente', None), 'nome', None))
+        return _to_divida_out(divida, cliente_nome=cli_nome, usuario_nome=usr_nome)
     except HTTPException:
         await db.rollback()
         raise

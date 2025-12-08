@@ -57,8 +57,8 @@ class ProdutoResponse(BaseModel):
     unidade_medida: str
     taxa_iva: float
     ativo: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -79,8 +79,8 @@ class ProdutoResponse(BaseModel):
             unidade_medida=obj.unidade_medida,
             taxa_iva=getattr(obj, "taxa_iva", 0.0),
             ativo=obj.ativo,
-            created_at=obj.created_at,
-            updated_at=obj.updated_at
+            created_at=getattr(obj, "created_at", None),
+            updated_at=getattr(obj, "updated_at", None)
         )
 
 @router.get("/", response_model=List[ProdutoResponse])
