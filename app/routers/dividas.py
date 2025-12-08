@@ -7,7 +7,7 @@ from sqlalchemy import select
 import uuid
 
 from app.db.database import get_db_session
-from app.db.models import Divida, ItemDivida, PagamentoDivida, Produto, Cliente, User
+from app.db.models import Divida, ItemDivida, PagamentoDivida, Produto, Cliente, User, Venda, ItemVenda
 
 
 router = APIRouter(prefix="/api/dividas", tags=["dividas"])
@@ -436,7 +436,45 @@ async def registrar_pagamento_divida(divida_id: str, payload: PagamentoDividaIn,
                 cancelada=False,
             )
             db.add(venda)
-            # Não criaremos itens_venda sintéticos obrigatoriamente; relatórios devem somar Venda.total
+            await db.flush()  # obter venda.id
+
+            # Garantir produto marcador 'PAGDIV' (não afeta estoque)
+            prod_stmt = select(Produto).where(Produto.codigo == "PAGDIV")
+            prod_res = await db.execute(prod_stmt)
+            prod = prod_res.scalar_one_or_none()
+            if not prod:
+                prod = Produto(
+                    codigo="PAGDIV",
+                    nome="Pagamento de Dívida",
+                    descricao="Item sintético para registrar pagamento de dívida",
+                    preco_custo=0.0,
+                    preco_venda=0.0,
+                    estoque=0.0,
+                    estoque_minimo=0.0,
+                    categoria_id=None,
+                    venda_por_peso=False,
+                    unidade_medida='un',
+                    ativo=True,
+                    taxa_iva=0.0,
+                    codigo_imposto=None,
+                )
+                db.add(prod)
+                await db.flush()
+
+            # Criar item sintético proporcional ao valor pago
+            valor_pago = float(payload.valor)
+            item = ItemVenda(
+                venda_id=venda.id,
+                produto_id=prod.id,
+                quantidade=1,
+                peso_kg=0.0,
+                preco_unitario=valor_pago,
+                subtotal=valor_pago,
+                taxa_iva=0.0,
+                base_iva=0.0,
+                valor_iva=0.0,
+            )
+            db.add(item)
             await db.commit()
         except Exception:
             # Não falhar o endpoint se a criação da venda falhar; apenas prosseguir
