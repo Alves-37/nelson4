@@ -7,7 +7,7 @@ from sqlalchemy import select
 import uuid
 
 from app.db.database import get_db_session
-from app.db.models import Divida, ItemDivida, PagamentoDivida, Produto, Cliente, User
+from app.db.models import Divida, ItemDivida, PagamentoDivida, Produto, Cliente, User, Venda, ItemVenda
 
 
 router = APIRouter(prefix="/api/dividas", tags=["dividas"])
