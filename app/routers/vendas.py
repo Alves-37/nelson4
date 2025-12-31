@@ -78,6 +78,23 @@ async def criar_venda(venda: VendaCreate, db: AsyncSession = Depends(get_db_sess
                 venda_uuid = uuid.UUID(venda.uuid)
             except ValueError:
                 venda_uuid = uuid.uuid4()
+
+        # Idempotência: se a venda já existir (mesmo UUID), retornar e NÃO baixar estoque novamente.
+        try:
+            existing = await db.execute(
+                select(Venda)
+                .options(selectinload(Venda.itens), selectinload(Venda.cliente), selectinload(Venda.usuario))
+                .where(Venda.id == venda_uuid)
+            )
+            venda_existente = existing.scalar_one_or_none()
+            if venda_existente:
+                try:
+                    setattr(venda_existente, 'usuario_nome', getattr(getattr(venda_existente, 'usuario', None), 'nome', None))
+                except Exception:
+                    setattr(venda_existente, 'usuario_nome', None)
+                return VendaResponse.model_validate(venda_existente)
+        except Exception:
+            pass
         
         # Converter cliente_id se fornecido
         cliente_uuid = None
@@ -161,6 +178,31 @@ async def criar_venda(venda: VendaCreate, db: AsyncSession = Depends(get_db_sess
                     valor_iva=valor_iva,
                 )
                 db.add(item)
+
+                # Baixar estoque no servidor
+                try:
+                    delta = float(quantidade)
+                    if bool(getattr(produto_db, 'venda_por_peso', False)):
+                        try:
+                            pk = float(peso_kg or 0.0)
+                        except Exception:
+                            pk = 0.0
+                        if pk > 0:
+                            delta = pk
+                    try:
+                        estoque_atual = float(getattr(produto_db, 'estoque', 0.0) or 0.0)
+                    except Exception:
+                        estoque_atual = 0.0
+                    if estoque_atual < (delta - 1e-9):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Estoque insuficiente para '{produto_db.nome}'. Disponível={estoque_atual}, solicitado={delta}",
+                        )
+                    setattr(produto_db, 'estoque', estoque_atual - delta)
+                except HTTPException:
+                    raise
+                except Exception as stock_ex:
+                    raise HTTPException(status_code=500, detail=f"Falha ao baixar estoque no servidor: {str(stock_ex)}")
         
         await db.commit()
         await db.refresh(nova_venda)
