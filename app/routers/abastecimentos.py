@@ -219,6 +219,13 @@ async def bulk_create_abastecimentos(payload: AbastecimentoBulkIn, db: AsyncSess
                     qtd = 0.0
                 produto_obj.estoque = float(getattr(produto_obj, "estoque", 0) or 0) + qtd
 
+                # Forçar atualização do updated_at do produto para que clientes (PDV3)
+                # detectem a mudança via pull e reflitam o novo estoque localmente.
+                try:
+                    setattr(produto_obj, 'updated_at', datetime.utcnow())
+                except Exception:
+                    pass
+
                 db.add(abast)
                 await db.flush()
 
